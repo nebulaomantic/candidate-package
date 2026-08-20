@@ -4,3 +4,4 @@ __pycache__/
 data/courses.db
 .pytest_cache/
 reports/
+DEFECTS.md
