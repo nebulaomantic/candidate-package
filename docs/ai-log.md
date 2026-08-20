@@ -89,3 +89,93 @@
 ---
 
 *Note: this table is the raw AI output for Task 1.*
+
+
+
+
+
+
+
+
+## Critique
+
+I read each and every row in AI's table one at a time and checked each one against
+the actual spec text. The easy cases (
+valid input, invalid input) were fine. The problems showed up in the
+trickier cases where the AI guessed instead of checking, or copied
+a pattern from one rule onto the another rule what it didn't actually apply.
+Here's what I found and fixed in `docs/test-cases.md`.
+
+**TC-053's row-count check doesn't actually prove anything.** It says
+`loaded + rejected >= raw input count`. But `>=` would still pass even if
+some rows quietly went missing and BR-11 says that's exactly what must
+never happen. So I made it a strict `==` check instead. While looking at
+this, I also noticed a real question the spec never answers: when two
+duplicate rows get deduped, what happens to the one that loses? It's not
+loaded, and the spec doesn't say it goes into `rejects` either. I didn't
+want to just guess, so I wrote this open question down in `DECISIONS.md`.
+
+**TC-038 tested the wrong date.** It used `10/01/2026` and called it safe
+either way you read it. That's actually not true — 10 is a valid month
+(October), so this date has two valid readings too: 10 January 2026
+day-first, or 1 October 2026 if misread month-first. Both parse fine, they
+just disagree. (I caught myself making the same mistake the AI made here —
+assuming "10 looks like a day" without checking that 10 is also a legal
+month number.) The real risk with BR-8 is any date where both numbers are
+12 or under, like `03/04/2026` — reading it the wrong way still gives a
+valid-looking date, just the wrong one, and nothing errors to warn you. A
+genuinely safe, unambiguous test date needs a number over 12 in one slot,
+like `25/01/2026` — 25 can't be a month, so a parser reading the format
+wrong would fail loudly instead of quietly returning the wrong date. I
+fixed TC-039 in `test-cases.md` to use `25/01/2026` for the unambiguous
+case, and kept `03/04/2026` (TC-040) as the genuinely risky one.
+
+**TC-042 made up an error reason.** It said a broken date like
+`2026-13-01` gets rejected with `invalid_intake_window`. But the spec only
+defines that reason for when `intake_end` isn't after `intake_start` — it
+says nothing about a date that's simply broken and can't be read at all.
+The AI seems to have reused the nearest-sounding reason instead of checking
+if it actually fits. I changed the expected result to just "rejected"
+without naming a reason, and flagged it as something to confirm against the
+real pipeline.
+
+**Two cases assumed "reject" without the spec saying so.** One is an
+unrecognized `delivery_mode` like `"remote"` (BR-5 never defines a reject
+reason for this at all). The other is a currency not in the conversion
+table, like `JPY` (BR-6's rate table just stops, with no stated fallback).
+I think the AI assumed "reject" here because every other rule in the doc
+rejects bad input, so it pattern-matched instead of noticing these two
+rules don't actually say that. I kept both cases but reworded them to say
+this needs to be checked against real behavior, not assumed.
+
+**One priority was set too low.** TC-030, about fee rounding at a tricky
+boundary (like `.xx5`), was marked Medium. A rounding mistake is a money
+mistake, so I bumped it to High — it doesn't matter that the input is a
+narrow edge case, the consequence still matters.
+
+**A rule wasn't tested from enough angles.** BR-1 (unique `course_id`) only
+had one case, and that case was really about the dedupe logic in BR-10
+(same course, updated later). It never tested a plain accidental
+collision — two unrelated rows that happen to share an id by mistake, with
+no update involved. I added that as its own case.
+
+**A couple of API cases stopped one step too early.** For a successful
+`POST /courses`, the AI checked the status code and that the record could
+be fetched afterward, but never checked what the response body itself
+contained. If the API is supposed to hand back the created record, that
+should be checked directly. Separately, the only "missing field" test for
+`422` was for a field that's absent — I added a second case for a field
+that's present but the wrong type (like text where a number is expected),
+since those can be handled by different code paths. Same idea for
+`GET /courses/{course_id}`: the only "not found" case used a well-formed id
+that simply doesn't exist. I added a second case for an id that's just
+badly formed, since that's a different kind of "not found."
+
+**Priority levels felt like defaults, not decisions.** A lot of the
+High/Medium/Low picks looked automatic rather than reasoned. I redid them
+based on how bad it would be if that case failed: anything touching data
+correctness or money (BR-1, BR-6, BR-7, BR-10, BR-11) stays High even for
+its edge cases, because a failure there can quietly corrupt the whole
+dataset, not just one row.
+
+The final, corrected list of test cases is in `docs/test-cases.md`.
