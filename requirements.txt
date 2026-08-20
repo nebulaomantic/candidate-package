@@ -1,0 +1,8 @@
+# pipeline + API
+fastapi>=0.110
+uvicorn>=0.29
+
+# suggested for your test suite (you may swap in tools you prefer)
+pytest>=8.0
+requests>=2.31
+httpx>=0.27

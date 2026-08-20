@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+data/courses.db
+.pytest_cache/
+reports/
