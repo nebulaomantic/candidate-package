@@ -1,0 +1,76 @@
+name: CourseFlow test suite
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest-html
+
+      - name: Run the ETL pipeline (build data/courses.db)
+        run: python etl/run_pipeline.py
+
+      - name: Start the API
+        run: |
+          nohup python -m uvicorn api.main:app --host 127.0.0.1 --port 8000 \
+            > api.log 2>&1 &
+          echo $! > api.pid
+
+      - name: Wait for /health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8000/health > /dev/null; then
+              echo "API is up."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "API did not become healthy in time."
+          cat api.log || true
+          exit 1
+
+      # Runs the full Task 2 (data validation) + Task 4 (API) suite.
+      # This step is intentionally allowed to fail the job on a red
+      # exit code: per ASSESSMENT.md, tests that fail because they
+      # correctly assert the spec against real pipeline/API defects are
+      # a success of the suite, not a CI malfunction -- see DEFECT.md
+      # for what each failure demonstrates. The report is still
+      # published as an artifact either way (see below).
+      - name: Run pytest suite
+        run: |
+          mkdir -p reports
+          python -m pytest \
+            --junitxml=reports/report.xml \
+            --html=reports/report.html --self-contained-html \
+            -v
+
+      - name: Stop the API
+        if: always()
+        run: kill "$(cat api.pid)" 2>/dev/null || true
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-report
+          path: reports/
+          if-no-files-found: warn
