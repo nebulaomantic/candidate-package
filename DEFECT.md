@@ -171,6 +171,104 @@ for the judgment calls behind a few of these (linked per item).
 
 ---
 
+### DEFECT-09 — `GET /courses` pagination: `total_pages` uses floor division instead of ceiling, stranding the last page's records
+
+- **Severity:** Critical
+- **Component:** `api/main.py`
+- **Steps to reproduce:**
+  1. Start the API: `uvicorn api.main:app --port 8000` (after running the pipeline).
+  2. `GET /courses?page_size=20` and read `total`/`total_pages`.
+  3. Compute `ceil(total / 20)` by hand and compare to the returned
+     `total_pages`.
+- **Expected:** API spec — "`total_pages = ceil(total / page_size)`.
+  **Every record must be reachable through pagination.**"
+- **Actual:** `total_pages = total // page_size` (floor division). Whenever
+  `total` isn't an exact multiple of `page_size`, the last partial page is
+  never counted, so requesting it returns `400` ("page out of range") and
+  those trailing records are unreachable through pagination entirely —
+  the opposite of the spec's guarantee. Reproduces with real data: at
+  `page_size=20`, the computed `total_pages` comes back one short
+  (`2498` instead of `2499`).
+- **Demonstrated by:** `tests/test_api.py::test_total_pages_is_ceil_of_total_over_page_size`, `::test_last_page_is_reachable_and_holds_the_remainder`, `::test_every_loaded_record_is_reachable_through_pagination`
+
+---
+
+### DEFECT-10 — `level` and `university_id` filters on `GET /courses` are case-sensitive
+
+- **Severity:** Major
+- **Component:** `api/main.py`
+- **Steps to reproduce:**
+  1. `GET /courses?level=Bachelor` — returns matches.
+  2. `GET /courses?level=BACHELOR` (or any differently-cased variant) —
+     returns zero results.
+- **Expected:** API spec — "Filters are **case-insensitive**."
+- **Actual:** The query builds `AND level = ?` / `AND university_id = ?`
+  with a plain equality comparison against the raw parameter, which
+  SQLite treats case-sensitively for these text columns. Any filter value
+  not matching the stored casing exactly returns an empty result set
+  instead of the expected matches.
+- **Demonstrated by:** `tests/test_api.py::test_level_filter_is_case_insensitive`, `::test_university_id_filter_is_case_insensitive`
+
+---
+
+### DEFECT-11 — `GET /courses/{course_id}` crashes with an unhandled exception instead of returning 404 for an unknown id
+
+- **Severity:** Critical
+- **Component:** `api/main.py`
+- **Steps to reproduce:** `GET /courses/CRS-does-not-exist`.
+- **Expected:** API spec — "`200` with the record, or `404` with
+  `{"error": ...}` if it does not exist."
+- **Actual:** `conn.execute(...).fetchone()` returns `None` for an unknown
+  `course_id`, and the handler immediately does `return dict(row)` with no
+  None-check — raising `TypeError: 'NoneType' object is not iterable`.
+  FastAPI's default exception handling turns this into a `500 Internal
+  Server Error`, not the spec's `404`.
+- **Demonstrated by:** `tests/test_api.py::test_get_unknown_course_returns_404_with_error_body`
+
+---
+
+### DEFECT-12 — `POST /courses` accepts requests with a missing `X-API-Key` header
+
+- **Severity:** Critical (auth bypass)
+- **Component:** `api/main.py`
+- **Steps to reproduce:** `POST /courses` with a valid body but **no**
+  `X-API-Key` header at all.
+- **Expected:** API spec — "Requires header `X-API-Key` ... Missing **or**
+  wrong key → `401`."
+- **Actual:**
+  ```python
+  key = request.headers.get("x-api-key")
+  if key is not None and key != API_KEY:
+      return JSONResponse(status_code=401, ...)
+  ```
+  When the header is absent, `key` is `None`, so `key is not None` is
+  `False` and the whole condition short-circuits — the missing-key case
+  never reaches the 401 branch and the request proceeds as if
+  authenticated. Only a *present-but-wrong* key is rejected; an *absent*
+  key is not, which is a real auth bypass, not just a spec-wording gap.
+- **Demonstrated by:** `tests/test_api.py::test_post_missing_api_key_returns_401`
+
+---
+
+### DEFECT-13 — `POST /courses` returns `201` instead of `422` when required fields are missing
+
+- **Severity:** Major
+- **Component:** `api/main.py`
+- **Steps to reproduce:** `POST /courses` with a valid `X-API-Key` but a
+  body missing a required field, e.g. no `fee_usd`.
+- **Expected:** API spec — "Missing/invalid required fields → `422`."
+- **Actual:** The missing-field branch returns a plain
+  `{"error": "missing fields: ..."}` dict with no explicit status code, so
+  FastAPI applies the route's decorator default, `@app.post("/courses",
+  status_code=201)`. The response comes back `201 Created` with an error
+  body instead of `422` — callers get a "success" status code for a
+  request that was in fact rejected. Reproduces for every required field
+  (`course_id, title, university_id, level, fee_usd, intake_start,
+  intake_end, delivery_mode, last_updated`).
+- **Demonstrated by:** `tests/test_api.py::test_post_missing_required_field_returns_422` (parametrized over all 9 required fields)
+
+---
+
 ## Summary
 
 | ID | Rule | Severity | Test |
@@ -183,4 +281,9 @@ for the judgment calls behind a few of these (linked per item).
 | DEFECT-06 | BR-8 / BR-11 | Critical | `test_transform_rules.py::test_unparseable_date_is_rejected_not_silently_dropped` |
 | DEFECT-07 | BR-9 | Minor–Major | `test_transform_rules.py::test_duration_bounds[0-False]` |
 | DEFECT-08 | BR-12 | Major | `test_transform_rules.py::test_deadline_not_strictly_before_intake_start_is_rejected` |
+| DEFECT-09 | API — pagination | Critical | `test_api.py::test_every_loaded_record_is_reachable_through_pagination` |
+| DEFECT-10 | API — filters | Major | `test_api.py::test_level_filter_is_case_insensitive` |
+| DEFECT-11 | API — `GET /courses/{id}` | Critical | `test_api.py::test_get_unknown_course_returns_404_with_error_body` |
+| DEFECT-12 | API — auth | Critical | `test_api.py::test_post_missing_api_key_returns_401` |
+| DEFECT-13 | API — validation | Major | `test_api.py::test_post_missing_required_field_returns_422` |
 
